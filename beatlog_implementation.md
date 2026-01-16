@@ -1,12 +1,4 @@
-# Device Health Monitoring System - Full Documentation
-
-## Overview
-
-A hierarchical health monitoring system for DVR/NVR devices, HDDs, and cameras with:
-- Real-time heartbeat logging
-- Offline detection and alerting
-- Cloud recording status tracking
-- Pre-computed summaries for scale
+# Device Health Monitoring System - Complete Documentation
 
 ---
 
@@ -23,40 +15,17 @@ superAdmin → clientAdmin → zoneAdmin → stateAdmin → districtAdmin → lo
 
 | Component | Interval | Purpose |
 |-----------|----------|---------|
-| Device heartbeat | **60 seconds** | Sends health data to API |
-| Offline threshold | **120 seconds** | Device marked offline if no heartbeat |
-| Cloud recording segment | **5 minutes** | Standard video segment length |
-| Cloud offline threshold | **10 minutes** | Cloud recording marked down |
-| Location summary update | **5 minutes** | Aggregate location stats |
-| Hierarchy summary update | **15 minutes** | Rollup district→state→zone |
+| Device heartbeat | **60s** | Sends health data |
+| Offline threshold | **120s** | Mark device offline |
+| Cloud segment | **5min** | Video segment length |
+| Cloud offline threshold | **10min** | Cloud recording down |
+| Location summary | **5min** | Aggregate stats |
+| Hierarchy rollup | **15min** | District→State→Zone |
+| Daily summary | **Midnight** | Generate daily stats |
 
 ---
 
-## 3. Heartbeat Flow
-
-```mermaid
-sequenceDiagram
-    participant D as Device
-    participant API as vprotect API
-    participant DB as Database
-    participant C as Celery
-
-    loop Every 60s
-        D->>API: POST /api/health/log/
-        API->>DB: Update last_heartbeat
-        API->>DB: Create DeviceHealthLog
-    end
-
-    loop Every 60s
-        C->>DB: Find last_heartbeat > 120s
-        C->>DB: Mark OFFLINE
-        C->>C: Send alerts
-    end
-```
-
----
-
-## 4. Beat Log Payload
+## 3. Beat Log Payload
 
 ```json
 {
@@ -69,7 +38,6 @@ sequenceDiagram
   "cpu_percent": 45.2,
   "ram_percent": 62.8,
   "uptime_seconds": 864000,
-
   "dvr_details": [
     {
       "dvr_id": "DVR-001",
@@ -78,28 +46,12 @@ sequenceDiagram
       "model": "Hikvision DS-7608",
       "is_recording": true,
       "hdds": [
-        {
-          "hdd_id": "HDD-1",
-          "name": "Seagate 2TB",
-          "total_gb": 2000,
-          "used_gb": 1500,
-          "percent": 75,
-          "status": "OK",
-          "temperature_c": 38,
-          "recording_days": 14
-        }
+        {"hdd_id": "HDD-1", "name": "Seagate 2TB", "total_gb": 2000, "used_gb": 1500, "percent": 75, "status": "OK", "temperature_c": 38, "recording_days": 14}
       ],
       "cameras": [
-        {
-          "camera_id": "CAM-001",
-          "name": "Entrance",
-          "channel": 1,
-          "status": "UP",
-          "resolution": "1920x1080",
-          "fps": 25,
-          "local_recording": {"is_recording": true, "recording_days": 14},
-          "cloud_recording": {"is_active": true, "last_upload": "2026-01-17T01:00:00"}
-        }
+        {"camera_id": "CAM-001", "name": "Entrance", "channel": 1, "status": "UP", "resolution": "1920x1080", "fps": 25,
+         "local_recording": {"is_recording": true, "recording_days": 14},
+         "cloud_recording": {"is_active": true, "last_upload": "2026-01-17T01:00:00"}}
       ]
     }
   ]
@@ -108,19 +60,16 @@ sequenceDiagram
 
 ---
 
-## 5. Models
+## 4. All Models
 
-### stream_Device (Modify Existing)
-
+### stream_Device (Modify)
 ```python
-# Add fields:
 last_heartbeat = models.DateTimeField(null=True)
 is_online = models.BooleanField(default=True)
 location_id = models.CharField(max_length=100, null=True, db_index=True)
 ```
 
-### DeviceHealthLog (New)
-
+### DeviceHealthLog
 ```python
 class DeviceHealthLog(models.Model):
     device = models.ForeignKey('stream_Device', on_delete=models.CASCADE)
@@ -136,8 +85,23 @@ class DeviceHealthLog(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 ```
 
-### LocationHealthSummary (New)
+### DailyHealthSummary
+```python
+class DailyHealthSummary(models.Model):
+    device = models.ForeignKey('stream_Device', on_delete=models.CASCADE)
+    date = models.DateField(db_index=True)
+    uptime_percent = models.FloatField()
+    downtime_minutes = models.IntegerField()
+    offline_incidents = models.IntegerField()
+    avg_cpu_percent = models.FloatField()
+    avg_hdd_percent = models.FloatField()
+    max_hdd_percent = models.FloatField()
+    cameras_avg_online = models.FloatField()
+    class Meta:
+        unique_together = ['device', 'date']
+```
 
+### LocationHealthSummary
 ```python
 class LocationHealthSummary(models.Model):
     location_id = models.CharField(max_length=100, unique=True)
@@ -154,24 +118,77 @@ class LocationHealthSummary(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 ```
 
-### DistrictHealthSummary, StateHealthSummary, ZoneHealthSummary
+### DistrictHealthSummary
+```python
+class DistrictHealthSummary(models.Model):
+    district_id = models.CharField(max_length=100, unique=True)
+    state_id = models.CharField(max_length=100, db_index=True)
+    locations_total = models.IntegerField(default=0)
+    devices_total = models.IntegerField(default=0)
+    devices_online = models.IntegerField(default=0)
+    dvrs_total = models.IntegerField(default=0)
+    dvrs_online = models.IntegerField(default=0)
+    cameras_total = models.IntegerField(default=0)
+    cameras_online = models.IntegerField(default=0)
+    hdds_critical = models.IntegerField(default=0)
+    avg_hdd_percent = models.FloatField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+```
 
-Same pattern with aggregated stats rolled up from below.
+### StateHealthSummary
+```python
+class StateHealthSummary(models.Model):
+    state_id = models.CharField(max_length=100, unique=True)
+    zone_id = models.CharField(max_length=100, db_index=True)
+    districts_total = models.IntegerField(default=0)
+    locations_total = models.IntegerField(default=0)
+    dvrs_online = models.IntegerField(default=0)
+    cameras_total = models.IntegerField(default=0)
+    cameras_online = models.IntegerField(default=0)
+    hdds_critical = models.IntegerField(default=0)
+    avg_hdd_percent = models.FloatField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+```
+
+### ZoneHealthSummary
+```python
+class ZoneHealthSummary(models.Model):
+    zone_id = models.CharField(max_length=100, unique=True)
+    states_total = models.IntegerField(default=0)
+    locations_total = models.IntegerField(default=0)
+    dvrs_online = models.IntegerField(default=0)
+    cameras_total = models.IntegerField(default=0)
+    cameras_online = models.IntegerField(default=0)
+    hdds_critical = models.IntegerField(default=0)
+    avg_hdd_percent = models.FloatField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+```
 
 ---
 
-## 6. API Endpoints
+## 5. API Endpoints
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/api/health/log/` | POST | Receive heartbeat + health data |
-| `/api/health/zones/` | GET | All zones summary |
-| `/api/health/zone/{id}/states/` | GET | Drill into states |
-| `/api/health/state/{id}/districts/` | GET | Drill into districts |
-| `/api/health/district/{id}/locations/` | GET | Drill into locations |
-| `/api/health/location/{id}/devices/` | GET | Drill into devices |
-| `/api/health/device/{id}/` | GET | Full device details |
-| `/api/health/device/{id}/history/` | GET | Historical logs |
+| `/api/health/log/` | POST | Receive heartbeat |
+| `/api/health/zones/` | GET | All zones |
+| `/api/health/zone/{id}/states/` | GET | Drill to states |
+| `/api/health/state/{id}/districts/` | GET | Drill to districts |
+| `/api/health/district/{id}/locations/` | GET | Drill to locations |
+| `/api/health/location/{id}/devices/` | GET | Drill to devices |
+| `/api/health/device/{id}/` | GET | Full details |
+| `/api/health/device/{id}/history/?date=YYYY-MM-DD` | GET | Single day |
+| `/api/health/device/{id}/history/?start=X&end=Y` | GET | Date range |
+
+---
+
+## 6. Historical Query Logic
+
+| Date Range | Source | Detail |
+|------------|--------|--------|
+| Within 30 days | `DeviceHealthLog` | Raw (60s granular) |
+| Older than 30 days | `DailyHealthSummary` | Daily aggregates |
+| Custom range | Both combined | Auto-merge |
 
 ---
 
@@ -179,16 +196,19 @@ Same pattern with aggregated stats rolled up from below.
 
 | Task | Schedule | Action |
 |------|----------|--------|
-| `check_offline_devices` | 60s | Find stale heartbeats (>120s), send alerts |
-| `check_cloud_recording` | 60s | Find cameras with no upload (>10min) |
-| `update_location_summaries` | 5 min | Aggregate per location |
-| `update_hierarchy_summaries` | 15 min | Rollup to district/state/zone |
+| `check_offline_devices` | 60s | Find stale heartbeats |
+| `check_cloud_recording` | 60s | Find camera upload gaps |
+| `update_location_summaries` | 5min | Aggregate locations |
+| `update_hierarchy_summaries` | 15min | Rollup to zones |
+| `generate_daily_summaries` | Midnight | Create daily stats |
+| `cleanup_old_logs` | Daily | Delete logs > 30 days |
 
 ---
 
-## 8. Cloud Recording Monitoring
+## 8. Data Retention
 
-- Segment duration: **5 minutes**
-- Offline threshold: **10 minutes** (2x segment)
-- Check: `now() - last_entry.end_time > 10min` → DOWN
-
+| Data | Keep For |
+|------|----------|
+| `DeviceHealthLog` | 30 days |
+| `DailyHealthSummary` | 1 year |
+| Summary tables | Always |
